@@ -13,47 +13,52 @@ const TIER_LIMITS: Record<string, number> = {
 
 // Shared logic to fetch limits from Meta API
 async function fetchLimitsFromMeta(phoneNumberId: string, accessToken: string) {
-  // Parallel fetch for throughput/quality and messaging tier
-  const [throughputResponse, tierResponse] = await Promise.all([
+  const authHeaders = { headers: { Authorization: `Bearer ${accessToken}` } }
+
+  const [qualityResponse, tierResponse] = await Promise.allSettled([
     fetch(
-      `https://graph.facebook.com/v24.0/${phoneNumberId}?fields=throughput,quality_score`,
-      { headers: { 'Authorization': `Bearer ${accessToken}` } }
+      `https://graph.facebook.com/v24.0/${phoneNumberId}?fields=quality_score`,
+      authHeaders
     ),
     fetch(
       `https://graph.facebook.com/v24.0/${phoneNumberId}?fields=whatsapp_business_manager_messaging_limit`,
-      { headers: { 'Authorization': `Bearer ${accessToken}` } }
+      authHeaders
     ),
   ])
 
-  if (!throughputResponse.ok || !tierResponse.ok) {
-    const errorThroughput = !throughputResponse.ok ? await throughputResponse.text() : null
-    const errorTier = !tierResponse.ok ? await tierResponse.text() : null
-    console.error('❌ Failed to fetch account limits from Meta:', { errorThroughput, errorTier })
-    throw new Error('Failed to fetch limits from Meta API')
-  }
-
-  const [throughputData, tierData] = await Promise.all([
-    throughputResponse.json(),
-    tierResponse.json(),
-  ])
-
-  // Parse throughput level
-  const throughputLevel = throughputData.throughput?.level === 'high' ? 'HIGH' : 'STANDARD'
-  
-  // Parse quality score
-  const rawQuality = throughputData.quality_score?.score?.toUpperCase()
-  const qualityScore = ['GREEN', 'YELLOW', 'RED'].includes(rawQuality) ? rawQuality : 'UNKNOWN'
-  
-  // Parse messaging tier
+  let throughputLevel: 'HIGH' | 'STANDARD' = 'STANDARD'
+  let qualityScore: 'GREEN' | 'YELLOW' | 'RED' | 'UNKNOWN' = 'UNKNOWN'
   let messagingTier = 'TIER_250'
-  const rawTier = tierData.whatsapp_business_manager_messaging_limit
-  
-  if (typeof rawTier === 'string') {
-    messagingTier = rawTier
-  } else if (rawTier && typeof rawTier === 'object') {
-    messagingTier = rawTier.current_limit || rawTier.tier || rawTier.limit || 'TIER_250'
+
+  if (qualityResponse.status === 'fulfilled' && qualityResponse.value.ok) {
+    const qualityData = await qualityResponse.value.json()
+    const rawQuality = qualityData.quality_score?.score?.toUpperCase()
+    qualityScore = ['GREEN', 'YELLOW', 'RED'].includes(rawQuality)
+      ? rawQuality
+      : 'UNKNOWN'
+  } else if (qualityResponse.status === 'fulfilled') {
+    const errorText = await qualityResponse.value.text().catch(() => 'Unknown error')
+    console.warn('⚠️ Could not fetch quality_score from Meta:', errorText)
+  } else {
+    console.warn('⚠️ Quality request failed:', qualityResponse.reason)
   }
-  
+
+  if (tierResponse.status === 'fulfilled' && tierResponse.value.ok) {
+    const tierData = await tierResponse.value.json()
+    const rawTier = tierData.whatsapp_business_manager_messaging_limit
+
+    if (typeof rawTier === 'string') {
+      messagingTier = rawTier
+    } else if (rawTier && typeof rawTier === 'object') {
+      messagingTier = rawTier.current_limit || rawTier.tier || rawTier.limit || 'TIER_250'
+    }
+  } else if (tierResponse.status === 'fulfilled') {
+    const errorText = await tierResponse.value.text().catch(() => 'Unknown error')
+    console.warn('⚠️ Could not fetch messaging tier from Meta:', errorText)
+  } else {
+    console.warn('⚠️ Messaging tier request failed:', tierResponse.reason)
+  }
+
   const maxUniqueUsersPerDay = TIER_LIMITS[messagingTier] || 250
 
   return {
@@ -70,9 +75,9 @@ async function fetchLimitsFromMeta(phoneNumberId: string, accessToken: string) {
 // GET /api/account/limits - Fetch limits using Redis credentials
 export async function GET() {
   const credentials = await getWhatsAppCredentials()
-  
+
   if (!credentials?.phoneNumberId || !credentials?.accessToken) {
-    return NextResponse.json({ 
+    return NextResponse.json({
       error: 'NO_CREDENTIALS',
       message: 'Credenciais do WhatsApp não configuradas. Configure em Ajustes.'
     }, { status: 401 })
@@ -96,19 +101,16 @@ export async function POST(request: NextRequest) {
   let phoneNumberId: string | undefined
   let accessToken: string | undefined
 
-  // Try to get from request body first
   try {
     const body = await request.json()
-    // Only use if they look like real credentials (not masked)
     if (body.phoneNumberId && body.accessToken && !body.accessToken.includes('***')) {
       phoneNumberId = body.phoneNumberId
       accessToken = body.accessToken
     }
   } catch {
-    // No body provided, will fallback to Redis
+      // No body provided, fallback to stored credentials
   }
 
-  // Fallback to Redis credentials if not provided
   if (!phoneNumberId || !accessToken) {
     const credentials = await getWhatsAppCredentials()
     if (credentials) {
@@ -118,7 +120,7 @@ export async function POST(request: NextRequest) {
   }
 
   if (!phoneNumberId || !accessToken) {
-    return NextResponse.json({ 
+    return NextResponse.json({
       error: 'NO_CREDENTIALS',
       message: 'Credenciais do WhatsApp não configuradas. Configure em Ajustes.'
     }, { status: 401 })
