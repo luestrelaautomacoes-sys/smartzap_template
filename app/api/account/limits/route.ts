@@ -26,7 +26,7 @@ async function fetchLimitsFromMeta(phoneNumberId: string, accessToken: string) {
     ),
   ])
 
-  let throughputLevel: 'HIGH' | 'STANDARD' = 'STANDARD'
+  const throughputLevel: 'HIGH' | 'STANDARD' = 'STANDARD'
   let qualityScore: 'GREEN' | 'YELLOW' | 'RED' | 'UNKNOWN' = 'UNKNOWN'
   let messagingTier = 'TIER_250'
 
@@ -65,7 +65,7 @@ async function fetchLimitsFromMeta(phoneNumberId: string, accessToken: string) {
     messagingTier,
     maxUniqueUsersPerDay: maxUniqueUsersPerDay === Infinity ? -1 : maxUniqueUsersPerDay,
     throughputLevel,
-    maxMessagesPerSecond: throughputLevel === 'HIGH' ? 1000 : 80,
+    maxMessagesPerSecond: 80,
     qualityScore,
     usedToday: 0,
     lastFetched: new Date().toISOString(),
