@@ -14,8 +14,8 @@ async function getVerifyToken(): Promise<string> {
   try {
     const storedToken = await settingsDb.get('webhook_verify_token');
 
-    if (storedToken?.value && typeof storedToken.value === 'string' && storedToken.value.trim()) {
-      return storedToken.value.trim();
+    if (typeof storedToken === 'string' && storedToken.trim()) {
+      return storedToken.trim();
     }
 
     const newToken = crypto.randomUUID();
