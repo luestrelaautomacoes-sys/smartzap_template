@@ -2015,7 +2015,7 @@ export const nodeExecutionDb = {
 export const templateProjectDb = {
     getAll: async (): Promise<TemplateProject[]> => {
         const { data, error } = await supabase
-            .from('template_projects')
+            .from('template_workspaces')
             .select('*')
             .order('created_at', { ascending: false });
 
@@ -2026,7 +2026,7 @@ export const templateProjectDb = {
     getById: async (id: string): Promise<TemplateProject & { items: TemplateProjectItem[] }> => {
         // Fetch project
         const { data: project, error: projectError } = await supabase
-            .from('template_projects')
+            .from('template_workspaces')
             .select('*')
             .eq('id', id)
             .single();
@@ -2048,7 +2048,7 @@ export const templateProjectDb = {
     create: async (dto: CreateTemplateProjectDTO): Promise<TemplateProject> => {
         // 1. Create Project
         const { data: project, error: projectError } = await supabase
-            .from('template_projects')
+            .from('template_workspaces')
             .insert({
                 title: dto.title,
                 prompt: dto.prompt,
@@ -2085,7 +2085,7 @@ export const templateProjectDb = {
 
     delete: async (id: string): Promise<void> => {
         const { error } = await supabase
-            .from('template_projects')
+            .from('template_workspaces')
             .delete()
             .eq('id', id);
 

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getWhatsAppCredentials } from '@/lib/whatsapp-credentials';
-import { redis, isRedisAvailable } from '@/lib/redis';
+import settingsDb from '@/lib/supabase-db';
 
 const META_API_VERSION = 'v21.0';
 const META_API_BASE = `https://graph.facebook.com/${META_API_VERSION}`;
@@ -9,19 +9,23 @@ interface RouteContext {
   params: Promise<{ phoneNumberId: string }>;
 }
 
-// Get verify token from Redis (same logic as webhook endpoint)
+// Get verify token from Supabase settings (same source of truth as main webhook)
 async function getVerifyToken(): Promise<string> {
-  if (isRedisAvailable() && redis) {
-    const storedToken = await redis.get('webhook:verify_token');
-    if (storedToken) {
-      return storedToken as string;
+  try {
+    const storedToken = await settingsDb.get('webhook_verify_token');
+
+    if (storedToken?.value && typeof storedToken.value === 'string' && storedToken.value.trim()) {
+      return storedToken.value.trim();
     }
-    // Generate new UUID token and store in Redis
+
     const newToken = crypto.randomUUID();
-    await redis.set('webhook:verify_token', newToken);
+    await settingsDb.set('webhook_verify_token', newToken);
+
     return newToken;
+  } catch (error) {
+    console.error('Failed to get verify token from Supabase settings:', error);
+    return process.env.WEBHOOK_VERIFY_TOKEN || 'smartzap_verify_token';
   }
-  return process.env.WEBHOOK_VERIFY_TOKEN || 'smartzap_verify_token';
 }
 
 /**
@@ -31,37 +35,42 @@ async function getVerifyToken(): Promise<string> {
 export async function POST(request: NextRequest, context: RouteContext) {
   try {
     const { phoneNumberId } = await context.params;
-    
-    // Try to get credentials from request body first, then fallback to Redis
+
     let accessToken: string | undefined;
     let callbackUrl: string | undefined;
-    
+
     try {
       const body = await request.json();
-      // Only use accessToken from body if it's a valid non-empty string
-      if (body.accessToken && typeof body.accessToken === 'string' && body.accessToken.trim().length > 10) {
+
+      if (
+        body.accessToken &&
+        typeof body.accessToken === 'string' &&
+        body.accessToken.trim().length > 10
+      ) {
         accessToken = body.accessToken.trim();
       }
-      callbackUrl = body.callbackUrl;
+
+      if (body.callbackUrl && typeof body.callbackUrl === 'string') {
+        callbackUrl = body.callbackUrl.trim();
+      }
     } catch {
-      // Empty body, will use Redis credentials
+      // Empty body, will use stored credentials
     }
-    
-    // Always try Redis credentials if we don't have a valid token yet
+
     if (!accessToken) {
       const credentials = await getWhatsAppCredentials();
       if (credentials?.accessToken) {
         accessToken = credentials.accessToken;
       }
     }
-    
+
     if (!accessToken) {
       return NextResponse.json(
         { error: 'Access token não configurado' },
         { status: 401 }
       );
     }
-    
+
     if (!callbackUrl) {
       return NextResponse.json(
         { error: 'callbackUrl é obrigatório' },
@@ -69,47 +78,40 @@ export async function POST(request: NextRequest, context: RouteContext) {
       );
     }
 
-    // Get verify token from Redis (ensures consistency with webhook endpoint)
-    const verifyTokenFromRedis = await getVerifyToken();
+    const verifyToken = await getVerifyToken();
 
-    // Call Meta API to set webhook override on phone number
-    // Reference: https://developers.facebook.com/docs/whatsapp/cloud-api/webhooks/override
-    const response = await fetch(
-      `${META_API_BASE}/${phoneNumberId}`,
-      {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
+    const response = await fetch(`${META_API_BASE}/${phoneNumberId}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        webhook_configuration: {
+          override_callback_uri: callbackUrl,
+          verify_token: verifyToken,
         },
-        body: JSON.stringify({
-          webhook_configuration: {
-            override_callback_uri: callbackUrl,
-            verify_token: verifyTokenFromRedis,
-          },
-        }),
-      }
-    );
+      }),
+    });
+
+    const data = await response.json();
 
     if (!response.ok) {
-      const errorData = await response.json();
-      console.error('Meta API error setting webhook override:', errorData);
+      console.error('Meta API error setting webhook override:', data);
       return NextResponse.json(
-        { 
-          error: errorData.error?.message || 'Erro ao configurar webhook override',
-          details: errorData.error 
+        {
+          error: data?.error?.message || 'Erro ao configurar webhook override',
+          details: data?.error || data,
         },
         { status: response.status }
       );
     }
 
-    const data = await response.json();
-    return NextResponse.json({ 
-      success: true, 
+    return NextResponse.json({
+      success: true,
       message: 'Webhook override configurado com sucesso',
-      data 
+      data,
     });
-
   } catch (error) {
     console.error('Error setting webhook override:', error);
     return NextResponse.json(
@@ -126,28 +128,30 @@ export async function POST(request: NextRequest, context: RouteContext) {
 export async function DELETE(request: NextRequest, context: RouteContext) {
   try {
     const { phoneNumberId } = await context.params;
-    
-    // Try to get credentials from request body first, then fallback to Redis
+
     let accessToken: string | undefined;
-    
+
     try {
       const body = await request.json();
-      // Only use accessToken from body if it's a valid non-empty string
-      if (body.accessToken && typeof body.accessToken === 'string' && body.accessToken.trim().length > 10) {
+
+      if (
+        body.accessToken &&
+        typeof body.accessToken === 'string' &&
+        body.accessToken.trim().length > 10
+      ) {
         accessToken = body.accessToken.trim();
       }
     } catch {
-      // Empty body, will use Redis credentials
+      // Empty body, will use stored credentials
     }
-    
-    // Always try Redis credentials if we don't have a valid token yet
+
     if (!accessToken) {
       const credentials = await getWhatsAppCredentials();
       if (credentials?.accessToken) {
         accessToken = credentials.accessToken;
       }
     }
-    
+
     if (!accessToken) {
       return NextResponse.json(
         { error: 'Access token não configurado' },
@@ -155,43 +159,37 @@ export async function DELETE(request: NextRequest, context: RouteContext) {
       );
     }
 
-    // Call Meta API to remove webhook override (set empty string)
-    // Reference: https://developers.facebook.com/docs/whatsapp/cloud-api/webhooks/override
-    const response = await fetch(
-      `${META_API_BASE}/${phoneNumberId}`,
-      {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
+    const response = await fetch(`${META_API_BASE}/${phoneNumberId}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        webhook_configuration: {
+          override_callback_uri: '',
         },
-        body: JSON.stringify({
-          webhook_configuration: {
-            override_callback_uri: '',
-          },
-        }),
-      }
-    );
+      }),
+    });
+
+    const data = await response.json();
 
     if (!response.ok) {
-      const errorData = await response.json();
-      console.error('Meta API error removing webhook override:', errorData);
+      console.error('Meta API error removing webhook override:', data);
       return NextResponse.json(
-        { 
-          error: errorData.error?.message || 'Erro ao remover webhook override',
-          details: errorData.error 
+        {
+          error: data?.error?.message || 'Erro ao remover webhook override',
+          details: data?.error || data,
         },
         { status: response.status }
       );
     }
 
-    const data = await response.json();
-    return NextResponse.json({ 
-      success: true, 
+    return NextResponse.json({
+      success: true,
       message: 'Webhook override removido com sucesso',
-      data 
+      data,
     });
-
   } catch (error) {
     console.error('Error removing webhook override:', error);
     return NextResponse.json(
