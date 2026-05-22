@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getWhatsAppCredentials } from '@/lib/whatsapp-credentials';
-import settingsDb from '@/lib/supabase-db';
+import { settingsDb } from '@/lib/supabase-db';
 
 const META_API_VERSION = 'v21.0';
 const META_API_BASE = `https://graph.facebook.com/${META_API_VERSION}`;
